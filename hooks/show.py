@@ -40,7 +40,7 @@ ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
 # CONTRACT with register.js (usageTable, RED + barSegs): the cache bar's miss run is exactly one `ESC[91m` span of U+2588 closed by
 # `ESC[0m`. That shape is what MISS_RUN matches; changing the colour code or the glyph there breaks the monochrome bar here.
 MISS_RUN = re.compile(r"\x1b\[91m(█+)\x1b\[0m")
-MONO_MISS = "░"  # light shade: one cell, hit cells stay U+2588, so `██░░░░ 28% hit` reads without colour
+MONO_MISS = "░"  # U+2591, East Asian Width N (U+2026 is A); hit cells stay U+2588, so `██░░░░ 28% hit` reads without colour
 # Hosts that do not draw ANSI in a systemMessage (owner: VS Code). Only the value the owner named; an unmeasured host is not guessed.
 NO_COLOUR_ENTRYPOINTS = ("claude-vscode",)
 
