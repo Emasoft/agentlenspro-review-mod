@@ -159,22 +159,21 @@ function write1hRate(rt) {
   return rt.w > 0 && Math.abs(rt.w - rt.i * 1.25) < 1e-9 ? rt.i * 2 : rt.w
 }
 
-// One exact cost per call, in USD. ttl ("1h" main agent, "5m" subagent) is the call's origin, set where the call is made.
-function callCostUsd(usage, rt, ttl) {
+// One exact cost per call, in USD.
+function callCostUsd(usage, rt) {
   const inp = usage.input_tokens || 0
   const cr = usage.cache_read_input_tokens || 0
   const cw = usage.cache_creation_input_tokens || 0
   const out = usage.output_tokens || 0
   const b = rt.above && inp + cr + cw > rt.above.over ? rt.above : rt
-  // Rule (owner order 2026-11-15): the API's own split of the cache writes by TTL is exact, so each part is priced at its own
-  // rate. Without a split, the call's origin decides: the main agent is always billed at 1h, a subagent always at 5m.
+  // Rule: the API's own split of the cache writes by TTL is exact, so each part is priced at its own rate. Writes the
+  // usage does not split bill at the 5m rate: every call the mod makes is a review/measure FORK or completion, i.e. a
+  // subagent, and measured over 391 review-fork transcripts 99.4% of their cache writes were 5m (71,706,401 vs 425,499 tokens at 1h).
   const split = usage.cache_creation
   const w1h = split && typeof split.ephemeral_1h_input_tokens === "number" ? split.ephemeral_1h_input_tokens : 0
   const w5m = split && typeof split.ephemeral_5m_input_tokens === "number" ? split.ephemeral_5m_input_tokens : 0
-  const rest = Math.max(0, cw - w1h - w5m) // writes the split does not account for follow the origin rule
-  if (rest > 0 && ttl !== "1h" && ttl !== "5m") throw new Error(`callCostUsd: ttl must be "1h" or "5m", got ${ttl}`)
-  const restRate = ttl === "1h" ? write1hRate(b) : b.w
-  return (inp * b.i + cr * b.r + out * b.o + w5m * b.w + w1h * write1hRate(b) + rest * restRate) / 1e6
+  const rest = Math.max(0, cw - w1h - w5m)
+  return (inp * b.i + cr * b.r + out * b.o + (w5m + rest) * b.w + w1h * write1hRate(b)) / 1e6
 }
 
 const fmtInt = (n) => Math.round(n).toLocaleString("en-US")
@@ -201,7 +200,7 @@ function formatUsageLine(calls, sessionModel, prev) {
     if (!models.includes(id)) models.push(id)
     const rt = lookupRates(id)
     let cost
-    if (rt) { const usd = callCostUsd(u, rt, c.ttl); tot.usd += usd; cost = fmtUsd(usd) } else { unpriced.push(id); cost = `rate unknown for ${id}` }
+    if (rt) { const usd = callCostUsd(u, rt); tot.usd += usd; cost = fmtUsd(usd) } else { unpriced.push(id); cost = `rate unknown for ${id}` }
     parts.push(`${c.label}: in ${fmtInt(inp)} · cache-read ${fmtInt(cr)} · cache-write ${fmtInt(cw)} · out ${fmtInt(out)} · ${cost}`)
     rows.push({ label: c.label, cost, tokens: { inp, cr, cw, out } })
   }
@@ -510,18 +509,17 @@ function extractJsonArray(text) {
 const HARNESS_HEAD = "[agentlenspro-review-mod: this request comes from the HARNESS, not from the user. You are not the main agent and you have NO tools: do not call any tool, answer at once in text.]"
 
 // One model call as the usage log needs it; model null = the session model (a fork runs on it).
-// ttl: the origin of the call, "1h" for a main-agent turn (always billed at 1h), "5m" for a subagent turn (always 5m).
-function callRecord(label, model, r, ttl) {
-  return r.isAnswered ? { label, model, ttl, usage: r.usage } : { label, model, ttl, reason: r.reason }
+function callRecord(label, model, r) {
+  return r.isAnswered ? { label, model, usage: r.usage } : { label, model, reason: r.reason }
 }
 
 // Returns { r, calls }: r is the final result, calls every attempt (the api-error retry bills on its own).
 async function fork($, prompt, label) {
   let r = await $.model.fork({ prompt })
-  const calls = [callRecord(label, null, r, "1h")]
+  const calls = [callRecord(label, null, r)]
   if (!r.isAnswered && r.reason === "api-error") {
     r = await $.model.fork({ prompt })
-    calls.push(callRecord(`${label} retry`, null, r, "1h"))
+    calls.push(callRecord(`${label} retry`, null, r))
   }
   return { r, calls }
 }
@@ -531,10 +529,10 @@ async function fork($, prompt, label) {
 async function complete($, prompt, label) {
   const ask = () => $.model.complete({ model: COMPLETION_MODEL, prompt, maxTokens: SUBAGENT_MAX_TOKENS, timeoutMs: SUBAGENT_TIMEOUT_MS })
   let r = await ask()
-  const calls = [callRecord(label, COMPLETION_MODEL, r, "5m")]
+  const calls = [callRecord(label, COMPLETION_MODEL, r)]
   if (!r.isAnswered && r.reason === "api-error") {
     r = await ask()
-    calls.push(callRecord(`${label} retry`, COMPLETION_MODEL, r, "5m"))
+    calls.push(callRecord(`${label} retry`, COMPLETION_MODEL, r))
   }
   return { r, calls }
 }
@@ -694,7 +692,7 @@ async function reviewInterrupted($, prompt, mark) {
       let excerpt = ""
       try { excerpt = JSON.stringify((await $.session.messages()).slice(-40)).slice(-60000) } catch (err) { excerpt = `(messages unavailable: ${errText(err)})` }
       const c = await $.model.complete({ model: COMPLETION_MODEL, system: reviewPrompt({ interrupted: true, lastMessage: null, scan, measure, pending: null, git, round: 1 }), prompt: `The interrupted conversation's last messages (JSON):\n${excerpt}`, maxTokens: 4000 })
-      calls.push(callRecord("review (interrupted, completion)", COMPLETION_MODEL, c, "1h"))
+      calls.push(callRecord("review (interrupted, completion)", COMPLETION_MODEL, c))
       res = c.isAnswered ? parseVerdict(c.text.trim()) : { ok: false, why: `fork: ${res.why}; completion: ${c.reason}` }
     }
     if (!res.ok) { await defer($, `interrupted turn: ${res.why}`); return }
