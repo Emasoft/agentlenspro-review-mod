@@ -222,7 +222,7 @@ function usageTable(table) {
   const YELLOW = "93" // token numbers
   const GREEN = "92" // costs
   const WHITE = "97" // model
-  const RED = "91" // cache misses (cache bar)
+  const RED = "91" // cache misses (cache bar). CONTRACT with hooks/show.py: the bar's miss run is exactly one `\u001b[91m` span of U+2588 closed by `\u001b[0m` (see barSegs); show.py rewrites that shape to U+2591 when colour is off, so do not change the colour code or the glyph here without changing MONO_MISS there
   const clean = (s) => String(s).replace(CONTROL, "")
   const seg = (code, text) => ({ code, text: clean(text) })
   const width = (segs) => segs.reduce((n, s) => n + [...s.text].length, 0)
